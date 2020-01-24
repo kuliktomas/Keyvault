@@ -1,0 +1,316 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat System 1.1//EN' 'http://www.it.uu.se/research/group/darts/uppaal/flat-1_2.dtd'>
+<nta>
+	<declaration>// Place global declarations here.
+const int controllers_number = 3;
+typedef int[1, controllers_number-1] controller_Id;
+
+//max model time
+const int MAXTIME = 17;
+typedef int[0,MAXTIME] time_t;
+
+int refresh = 2;
+int grace = 2;
+int validity = 4;
+
+//discrete time
+time_t current_time;
+
+typedef int[1,2] sig_k;
+//keyvault signing certificate
+typedef struct{
+    int sig_ca;
+    int pk_ca;
+}cert_ca;
+
+const cert_ca system_cert_ca = {1,1};
+
+//effective certificate with expiry time
+typedef struct{
+    sig_k sig_ca;
+    int pk_eff;
+    int expiry;
+    time_t t;
+}cert_eff;
+
+typedef cert_eff EffectiveCertificates[controllers_number];
+
+//NewEffectiveRequest
+typedef struct{
+    int pk_eff_new;
+    int sig_eff_old;
+    time_t t;
+}NewEff;
+
+//array of new effs
+typedef NewEff NewEffs[controllers_number];
+NewEffs newEffs;
+
+//controller modes
+const int sparePart = 0;
+const int controller = 1;
+
+//array of controllers
+typedef bool controllers[controllers_number];
+
+//array of sig_eff for controllers
+typedef int sig_effs[controllers_number];
+sig_effs ctr_sig_effs;
+
+//always one, could be invalid with wrong sk_eff
+const int set_pk_eff = 1;
+
+typedef int[1,2] sk_eff_gen;
+
+//OT notification
+bool notification = false;
+
+//clock
+clock x;
+clock rekeyTime;
+
+//init
+const cert_eff initialized_cert = {1,1,9,0};
+const cert_eff notinitialized_cert = {1,0,0,0};
+EffectiveCertificates effectiveCertificates= {notinitialized_cert, initialized_cert, initialized_cert};
+controllers system_controllers={false, true, true};
+
+bool AllCertsValid(controllers ctrs){
+    int i;
+    bool have_certs = false; 
+    bool result = false;
+    for(i = 0; i &lt; controllers_number; i++){
+        if(ctrs[i] == true){
+            have_certs = true;
+            if((effectiveCertificates[i].sig_ca == system_cert_ca.sig_ca) &amp;&amp; (effectiveCertificates[i].expiry + grace &gt;= current_time)){
+                result = result || true;
+            }else{
+                result = false;
+                return result;
+            }
+        }
+    }
+    if(have_certs == true){
+        return result;
+    }else{
+        return true; // if no controllers in the system, well nothing can go wrong :)
+    }
+}
+
+
+broadcast chan RekeyInit;
+chan NewEffectiveKey[controllers_number];
+chan NewKVCert[controllers_number];
+chan Rekey;
+chan Notify;</declaration>
+	<template>
+		<name>OT</name>
+		<declaration>void HandleNotification(){
+    notification = true;
+    return;
+}</declaration>
+		<location id="id0" x="0" y="0">
+		</location>
+		<init ref="id0"/>
+		<transition>
+			<source ref="id0"/>
+			<target ref="id0"/>
+			<label kind="synchronisation" x="18" y="-59">Notify?</label>
+			<nail x="0" y="-42"/>
+			<nail x="144" y="-42"/>
+			<nail x="144" y="0"/>
+		</transition>
+	</template>
+	<template>
+		<name>TimeDiscretizer</name>
+		<location id="id1" x="0" y="0">
+			<label kind="invariant" x="-153" y="17">x&lt;=MAXTIME &amp;&amp; x&lt;=current_time + 1</label>
+		</location>
+		<init ref="id1"/>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id1"/>
+			<label kind="guard" x="25" y="-59">x &gt;= current_time +1</label>
+			<label kind="assignment" x="35" y="-42">current_time++</label>
+			<nail x="17" y="-42"/>
+			<nail x="187" y="-42"/>
+			<nail x="187" y="0"/>
+		</transition>
+	</template>
+	<template>
+		<name x="5" y="5">Keyvault</name>
+		<declaration>// Place local declarations here.
+int new_eff_Id;
+
+//Check the signature of the incoming old certificate
+bool VerifyEffSig(int Id){
+    if((newEffs[Id].sig_eff_old / effectiveCertificates[Id].pk_eff) == 1 ){ //hmmm, maybe this could be better with root of trust?
+        return true;
+    }
+    return false;
+}
+
+//Issue new certificate based on the new pk_eff request
+void IssueNewCertificate(int Id){
+    effectiveCertificates[Id].sig_ca = system_cert_ca.sig_ca; //self signed ca certificate of the keyvault
+    effectiveCertificates[Id].pk_eff = newEffs[Id].pk_eff_new;
+    effectiveCertificates[Id].expiry = current_time + validity; 
+    effectiveCertificates[Id].t = current_time; 
+    return;
+}</declaration>
+		<location id="id2" x="0" y="0">
+		</location>
+		<location id="id3" x="-255" y="-68">
+			<urgent/>
+		</location>
+		<location id="id4" x="161" y="-59">
+			<committed/>
+		</location>
+		<init ref="id2"/>
+		<transition>
+			<source ref="id2"/>
+			<target ref="id4"/>
+			<label kind="synchronisation" x="52" y="-76">Rekey?</label>
+			<nail x="34" y="-59"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id2"/>
+			<label kind="guard" x="-238" y="42">!VerifyEffSig(new_eff_Id)</label>
+			<label kind="synchronisation" x="-187" y="68">Notify!</label>
+			<nail x="-314" y="25"/>
+			<nail x="-314" y="59"/>
+			<nail x="0" y="59"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id2"/>
+			<label kind="guard" x="-237" y="-34">VerifyEffSig(new_eff_Id)</label>
+			<label kind="synchronisation" x="-237" y="-17">NewKVCert[new_eff_Id]!</label>
+			<label kind="assignment" x="-237" y="0">IssueNewCertificate(new_eff_Id)</label>
+			<nail x="-255" y="0"/>
+		</transition>
+		<transition>
+			<source ref="id2"/>
+			<target ref="id3"/>
+			<label kind="select" x="-229" y="-102">Id:int[1, controllers_number - 1]</label>
+			<label kind="synchronisation" x="-204" y="-85">NewEffectiveKey[Id]?</label>
+			<label kind="assignment" x="-204" y="-68">new_eff_Id = Id</label>
+			<nail x="-25" y="-68"/>
+		</transition>
+		<transition>
+			<source ref="id4"/>
+			<target ref="id2"/>
+			<label kind="synchronisation" x="51" y="-17">RekeyInit!</label>
+			<nail x="161" y="-34"/>
+			<nail x="153" y="-34"/>
+			<nail x="144" y="0"/>
+		</transition>
+	</template>
+	<template>
+		<name>RekeyTimer</name>
+		<location id="id5" x="0" y="0">
+			<label kind="invariant" x="-10" y="17">rekeyTime &lt;=refresh + grace</label>
+		</location>
+		<init ref="id5"/>
+		<transition>
+			<source ref="id5"/>
+			<target ref="id5"/>
+			<label kind="guard" x="8" y="-51">rekeyTime &gt;= refresh</label>
+			<label kind="synchronisation" x="42" y="-34">Rekey!</label>
+			<label kind="assignment" x="34" y="-25">rekeyTime =0</label>
+			<nail x="0" y="-34"/>
+			<nail x="178" y="-34"/>
+			<nail x="178" y="0"/>
+		</transition>
+	</template>
+	<template>
+		<name>Controller</name>
+		<parameter>controller_Id my_Id, bool mode, cert_eff my_cert_eff, int my_sk_eff, bool robust_generator</parameter>
+		<declaration>int old_sk_eff;
+
+clock clk;
+
+void CreateSigEff(){
+    ctr_sig_effs[my_Id] = my_cert_eff.pk_eff * my_sk_eff;
+    return;
+}
+
+void GenerateNewEff(int pair){
+    CreateSigEff();
+    old_sk_eff = my_sk_eff;
+    if(robust_generator){
+        my_sk_eff = 1;
+    }else{
+        my_sk_eff = pair;
+    }
+    clk = 0;
+    return;
+}
+
+//Sends a request to the keyvault for new cert_eff
+void ProvideNewPK_Eff(int Id){
+    newEffs[Id].pk_eff_new = set_pk_eff;
+    newEffs[Id].sig_eff_old = ctr_sig_effs[my_Id];
+    newEffs[Id].t = current_time;
+    return;
+}
+
+//Receives the new cert_eff from the keyvault
+void GetNewCertificate(int Id){
+    my_cert_eff = effectiveCertificates[Id];
+    return;
+}</declaration>
+		<location id="id6" x="0" y="0">
+		</location>
+		<location id="id7" x="238" y="0">
+			<label kind="invariant" x="212" y="-34">clk&lt;=1</label>
+		</location>
+		<init ref="id6"/>
+		<transition>
+			<source ref="id6"/>
+			<target ref="id6"/>
+			<label kind="synchronisation" x="-153" y="-17">NewKVCert[my_Id]?</label>
+			<label kind="assignment" x="-178" y="51">GetNewCertificate(my_Id)</label>
+			<nail x="-161" y="0"/>
+			<nail x="-161" y="51"/>
+			<nail x="-25" y="51"/>
+		</transition>
+		<transition>
+			<source ref="id7"/>
+			<target ref="id6"/>
+			<label kind="guard" x="92" y="34">clk&gt;=1</label>
+			<label kind="synchronisation" x="51" y="51">NewEffectiveKey[my_Id]!</label>
+			<label kind="assignment" x="51" y="68">ProvideNewPK_Eff(my_Id)</label>
+			<nail x="237" y="68"/>
+			<nail x="33" y="68"/>
+		</transition>
+		<transition>
+			<source ref="id6"/>
+			<target ref="id7"/>
+			<label kind="select" x="42" y="-51">pair:sk_eff_gen</label>
+			<label kind="guard" x="25" y="-34">mode == controller</label>
+			<label kind="synchronisation" x="51" y="-17">RekeyInit?</label>
+			<label kind="assignment" x="18" y="0">GenerateNewEff(pair)</label>
+		</transition>
+	</template>
+	<system>// Place template instantiations here.
+controller1 = Controller(1, controller, initialized_cert, 1, false);
+controller2 = Controller(2, controller, initialized_cert, 1, true);
+keyvault1 = Keyvault();
+timediscretizer = TimeDiscretizer();
+//rekey timer definitions
+rekeytimer = RekeyTimer();
+
+//OT definitions
+ot = OT();
+// List one or more processes to be composed into a system.
+system controller1, controller2, keyvault1, timediscretizer, rekeytimer, ot;
+//system controller1, keyvault1, timediscretizer, rekeytimer, ot;  </system>
+	<queries>
+		<query>
+			<formula>A[]AllCertsValid(system_controllers)</formula>
+			<comment></comment>
+		</query>
+	</queries>
+</nta>

@@ -1,0 +1,1269 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat System 1.1//EN' 'http://www.it.uu.se/research/group/darts/uppaal/flat-1_2.dtd'>
+<nta>
+	<declaration>// Place global declarations here.
+//refresh time
+const int refresh_setting = 2;
+//max model time
+const int MAXTIME = 6;
+typedef int[0,MAXTIME] time_t;
+//discrete time
+time_t current_time;
+bool sync_happenned;
+bool remove_happenned;
+bool join_happenned;
+
+
+//action guards guard
+bool joining;
+bool rekeying;
+bool syncing;
+bool removing;
+
+//max amount of controllers in the system
+const int controllers_number = 3;
+typedef int[1, controllers_number-1] controller_Id;
+
+//keyvault signatures
+typedef int[1,2] sig_k;
+
+//manufacturer certificate
+typedef struct{
+    int sig_m;
+    int pk_m;
+}cert_m;
+
+//keyvault signing certificate
+typedef struct{
+    int sig_ca;
+    int pk_ca;
+}cert_ca;
+
+//keyvault certificate, sig_m is manufacturer signature
+typedef struct{
+    int sig_m;
+    int pk_kv;
+}cert_kv;
+
+//effective certificate with expiry time
+typedef struct{
+    sig_k sig_ca;
+    int pk_eff;
+    int expiry;
+    time_t t;
+}cert_eff;
+
+//spare part handling
+//spare part challenge with message encrypted by pk_c
+typedef struct{
+   int encrypted_msg;
+   int pk_c;
+   time_t t;
+}spChallenge;
+//array holding all of the spare part challenges
+typedef spChallenge SPChallenges[controllers_number];
+SPChallenges spChallenges;
+
+//spare part answer to keyvault challenge
+typedef struct{
+    int msg;
+    time_t t;
+}spAnswer;
+//array holding all of the spare part answers
+typedef spAnswer SPAnswers[controllers_number];
+SPAnswers spAnswers;
+
+//SP certificate acknowledgement sent by SP
+typedef struct{
+    int pk_eff;
+    time_t t;
+}spAck;
+//array holding all of the spACKs
+typedef spAck SPAcks[controllers_number];
+SPAcks spAcks;
+
+//keyvault certificate acknowledgement sent by keyvault
+typedef struct{
+    cert_kv cert_k;
+    time_t t;
+}kvAck;
+//array holding all of the kvACKs
+typedef kvAck KVACKs[controllers_number];
+KVACKs kvAcks;
+
+//keyvault handling
+typedef struct{
+    int encrypted_msg;
+    int pk_kv;
+    time_t t;
+}kvChallenge;
+//array holding all of the keyvault challenges
+typedef kvChallenge KVChallenges[controllers_number];
+KVChallenges kvChallenges;
+
+//keyvault challenge answers
+typedef struct{
+    int msg;
+    time_t t;
+}kvAnswer;
+typedef kvAnswer KVAnswers[controllers_number];
+KVAnswers kvAnswers;
+
+//cert_ct definition - certificate of a controller with public key signed by manufacturer (sm = sig_m)
+typedef struct{
+    int sig_m;
+    int pk_ct;
+}cert_ct;
+
+//eff pair
+typedef struct{
+    int sk_eff;
+    int pk_eff;
+}effective_pair;
+// array of effective pairs - one valid and one invalid
+typedef effective_pair Effective_pairs[2];
+
+// eff_certificates to controllers
+typedef cert_eff EffectiveCertificates[controllers_number];
+//EffectiveCertificates effectiveCertificates;
+
+//join requests
+typedef struct{
+    controller_Id Id;
+    cert_ct cert_c;
+}joinRequest;
+
+//array of join requests
+typedef joinRequest JoinRequests[controllers_number];
+JoinRequests joinRequests;
+
+//array of controllers
+typedef bool controllers[controllers_number];
+
+//NewEffectiveRequest
+typedef struct{
+    int pk_eff_new;
+    int sig_eff_old;
+    time_t t;
+}NewEff;
+
+//array of new effs
+typedef NewEff NewEffs[controllers_number];
+NewEffs newEffs;
+
+//keyvault sync challenge
+typedef struct{
+   int encrypted_msg;
+   int pk_kv;
+   time_t t;
+}KVSyncChallenge;
+//actual kv sync challenge
+KVSyncChallenge kvSyncChallenge;
+
+//keyvault sync challenge reply
+typedef struct{
+    int msg;
+    int encrypted_msg;
+    int pk_kv;
+    time_t t;
+}KVSyncReply;
+//actual kv sync reply (from secondary keyvault)
+KVSyncReply kvSyncReply;
+//second kv sync reply (from primary keyvault)
+spAnswer secKvSyncReply;
+
+//controller modes
+const int sparePart = 0;
+const int controller = 1;
+
+//order ov keyvault sync challenge answers (Used within the guard)
+const int first = 1;
+const int second = 2;
+
+//controllers to be sent from primary to secondary
+controllers controllerTransfer;
+
+//internal state of the primary keyvault to be transfered to the secondary
+//Id of current controller handled for join request
+int recent_Id_transfer;
+//Id of currently handled challenge answer
+int answer_Id_transfer;
+//Id of a currently handled challenge to the keyvault
+int challenge_Id_transfer;
+//Id of the controller currently asking for pk_eff certification
+int eff_Id_transfer;
+//Id of the controller asking for new pk_eff certification
+int new_eff_Id_transfer;
+//Id of the controller for removal
+int ctr_Id_transfer;
+
+//controller removal Id - Id OT sends to be removed
+controller_Id removal_Id;
+//notification OT
+bool notification;
+
+//channels
+chan JoinSP[controllers_number];
+broadcast chan Notify;
+chan SPChallenge[controllers_number];
+chan SPAnswer[controllers_number];
+chan KVAck[controllers_number];
+chan KVChallenge[controllers_number];
+chan KVAnswer[controllers_number];
+chan SPAck[controllers_number];
+chan KVCert[controllers_number];
+broadcast chan RekeyInit;
+chan Rekey;
+chan NewEffectiveKey[controllers_number];
+chan NewKVCert[controllers_number];
+chan KvSyncChallenge;
+chan KvSyncReply;
+chan KvSecSyncReply;
+broadcast chan KvSecACK;
+chan KvControllers;
+chan RemController;
+chan RemoveControllerFwd[controllers_number];
+chan AckRemove[controllers_number];
+chan AckOTRemove;
+//clock
+clock x;
+clock rekey_clk;
+
+//initialization
+Effective_pairs effective_pairs = {{1,1},{1,3}}; // 1,1 - valid, 1,3 - invalid
+const cert_eff initialized_cert = {1,1,5,0};
+const cert_eff notinitialized_cert = {1,0,0,0};
+EffectiveCertificates effectiveCertificates= {notinitialized_cert, notinitialized_cert, initialized_cert};
+</declaration>
+	<template>
+		<name>RekeyTimer</name>
+		<declaration>clock clk;
+
+bool Rekey_ready(){
+    return(!(removing || syncing || joining));
+}</declaration>
+		<location id="id0" x="0" y="0">
+			<label kind="invariant" x="-10" y="17">rekey_clk&lt;=refresh_setting + 2</label>
+		</location>
+		<init ref="id0"/>
+		<transition>
+			<source ref="id0"/>
+			<target ref="id0"/>
+			<label kind="guard" x="-68" y="-51">rekey_clk&gt;= refresh_setting &amp;&amp; Rekey_ready()</label>
+			<label kind="synchronisation" x="25" y="-34">Rekey!</label>
+			<label kind="assignment" x="25" y="0">rekey_clk=0, rekeying = true</label>
+			<nail x="0" y="-34"/>
+			<nail x="187" y="-34"/>
+			<nail x="187" y="0"/>
+		</transition>
+	</template>
+	<template>
+		<name>OT</name>
+		<declaration>//process clock
+//clock clk;
+
+//removalMonitor
+bool removal_finished = true;
+//sets the Id for which a controller shall be removed
+void RemoveController(int Id){
+    removal_Id = Id;
+    //clk = 0;
+    removing = true;
+    sync_happenned = false;
+    return;
+}
+
+void ReceiveNotification(){
+    notification = true;
+    return;
+}
+
+bool removeAllowed(){
+    return(!(joining || syncing || removing || rekeying));
+}</declaration>
+		<location id="id1" x="34" y="8">
+		</location>
+		<init ref="id1"/>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id1"/>
+			<label kind="synchronisation" x="-127" y="34">AckOTRemove?</label>
+			<label kind="assignment" x="-144" y="68">removing = false</label>
+			<nail x="8" y="34"/>
+			<nail x="-136" y="34"/>
+			<nail x="-136" y="68"/>
+			<nail x="8" y="68"/>
+		</transition>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id1"/>
+			<label kind="select" x="42" y="-42">Id:int[1,controllers_number - 1]</label>
+			<label kind="guard" x="-17" y="-59">removeAllowed() &amp;&amp; rekey_clk &lt;= refresh_setting</label>
+			<label kind="synchronisation" x="76" y="-8">RemController!</label>
+			<label kind="assignment" x="68" y="-25">RemoveController(Id)</label>
+			<nail x="59" y="-25"/>
+			<nail x="229" y="-25"/>
+			<nail x="229" y="0"/>
+			<nail x="229" y="8"/>
+		</transition>
+		<transition>
+			<source ref="id1"/>
+			<target ref="id1"/>
+			<label kind="synchronisation" x="-76" y="-42">Notify?</label>
+			<label kind="assignment" x="-127" y="-25">ReceiveNotification()</label>
+			<nail x="-136" y="8"/>
+			<nail x="-136" y="-25"/>
+			<nail x="25" y="-25"/>
+		</transition>
+	</template>
+	<template>
+		<name>TimeDiscretizer</name>
+		<location id="id2" x="-399" y="-8">
+			<label kind="invariant" x="-552" y="25">x&lt;=current_time + 1</label>
+		</location>
+		<init ref="id2"/>
+		<transition>
+			<source ref="id2"/>
+			<target ref="id2"/>
+			<label kind="guard" x="-323" y="-25">rekey_clk &gt; refresh_setting</label>
+			<label kind="synchronisation" x="-306" y="0">Rekey!</label>
+			<label kind="assignment" x="-365" y="17">rekey_clk = 0, rekeying = true</label>
+			<nail x="-144" y="-8"/>
+			<nail x="-144" y="34"/>
+			<nail x="-374" y="34"/>
+		</transition>
+		<transition>
+			<source ref="id2"/>
+			<target ref="id2"/>
+			<label kind="guard" x="-552" y="-25">x==MAXTIME</label>
+			<label kind="synchronisation" x="-552" y="-76">Rekey!</label>
+			<label kind="assignment" x="-586" y="-8">x=0, current_time = 0,
+rekeying = true</label>
+			<nail x="-569" y="-8"/>
+			<nail x="-569" y="-59"/>
+			<nail x="-442" y="-59"/>
+		</transition>
+		<transition>
+			<source ref="id2"/>
+			<target ref="id2"/>
+			<label kind="guard" x="-425" y="-76">x &gt;=current_time + 1 &amp;&amp; x &lt;MAXTIME &amp;&amp; rekey_clk &lt;= refresh_setting</label>
+			<label kind="assignment" x="-347" y="-59">current_time++</label>
+			<nail x="-365" y="-59"/>
+			<nail x="-144" y="-59"/>
+			<nail x="-144" y="-25"/>
+			<nail x="-357" y="-25"/>
+		</transition>
+	</template>
+	<template>
+		<name x="5" y="5">Keyvault</name>
+		<parameter>cert_m my_cert_m, cert_kv my_cert_kv, cert_kv other_cert_kv, cert_ca my_cert_ca, int sk_kv, bool isPrimary, controllers kv_controllers</parameter>
+		<declaration>// Place local declarations here.
+//Flag determining if the keyvault is the primary one 
+//bool isPrimary;
+//manufacturer certificate - PRELOADED
+//cert_m my_cert_m;
+//kv certificate of this keyvault - PRELOADED
+//cert_kv my_cert_kv;
+//kv certificate of the other keyvault - PRELOADED
+//cert_kv other_cert_kv;
+//kv signing certificate - self signed
+//cert_ca my_cert_ca;
+//private key of the keyvault
+//int sk_kv;
+//process clock
+clock clk;
+//sync guard
+bool must_sync = false;
+//message to be sent as a challenge
+const int msg = 1;
+//Certificate validity
+const int validity = 3;
+//keyvault decrypted message
+int decrypted_msg;
+
+//Id of current controller handled for join request
+int recent_Id;
+//Id of currently handled challenge answer
+int answer_Id;
+//Id of a currently handled challenge to the keyvault
+int challenge_Id;
+//Id of the controller currently asking for pk_eff certification
+int eff_Id;
+//Id of the controller asking for new pk_eff certification
+int new_eff_Id;
+//Id of the controller for removal
+int ctr_Id;
+//sig_kv of the keyvault
+sig_k my_sig_kv;
+
+//controller arrays
+//controllers kv_controllers;
+
+void SetPrimary(bool primary){
+    isPrimary = primary;
+    return;
+}
+//Adds a controller to the keyvault array of controllers ****!!!MIGHT HAVE TO BE EXTENDED TO SYNC WITH SECONDARY!!!**********************
+void AddController(controller_Id Id){
+    kv_controllers[Id] = true;
+    return;
+}
+//Removes a controller from the keyvault list of controllers ****!!!MIGHT HAVE TO BE EXTENDED TO SYNC WITH SECONDARY!!!**********************
+void RemoveController(controller_Id Id){
+    kv_controllers[Id] = false;
+    return;
+}
+//Verification of the signature during join request
+bool VerifySig(int Id){
+    if(joinRequests[Id].cert_c.sig_m == my_cert_m.sig_m){
+        return true;
+    }
+    return false;
+}
+//Challenge the spare part
+void ChallengeSP(int Id){
+    spChallenges[Id].encrypted_msg = msg * joinRequests[Id].cert_c.pk_ct;
+    spChallenges[Id].pk_c = joinRequests[Id].cert_c.pk_ct;
+    spChallenges[Id].t = current_time;
+}
+//Verification of correct challenge decryption
+bool VerifySPAnswer(int Id){
+    if(spAnswers[Id].msg == msg){
+        return true;
+    }
+    return false;
+}
+
+//Send ACK with KV certificate to the spare part, also adds the controller to the array of controllers
+void ProvideKVCert(int Id){
+    AddController(Id);
+    kvAcks[Id].cert_k = my_cert_kv;
+    kvAcks[Id].t = current_time;
+    return;
+}
+
+//Decrypts the challenge from the SP
+void DecryptChallenge(int Id){
+    challenge_Id = Id;
+    decrypted_msg = (kvChallenges[Id].encrypted_msg / sk_kv);
+    return;
+}
+
+//Keyvault answer to the SP challenge
+void AnswerChallenge(int Id){
+    kvAnswers[Id].msg = decrypted_msg;
+    kvAnswers[Id].t = current_time;
+    return;
+}
+
+//Keyvault creates a certificate based on the pk_eff
+void IssueCertificate(int Id){
+//send a copy of the cert_ca to the controller
+    effectiveCertificates[Id].sig_ca = my_cert_ca.sig_ca;  //self signed ca certificate of the keyvault
+    effectiveCertificates[Id].pk_eff = spAcks[Id].pk_eff;
+    effectiveCertificates[Id].expiry = current_time + validity; 
+    effectiveCertificates[Id].t = current_time; 
+    joining = false;
+    return;
+}
+//Check the signature of the incoming old certificate
+bool VerifyEffSig(int Id){
+    if((newEffs[Id].sig_eff_old / effectiveCertificates[Id].pk_eff) == 1 ){ //hmmm, maybe this could be better with root of trust?
+        return true;
+    }
+    return false;
+}
+//Issue new certificate based on the new pk_eff request
+void IssueNewCertificate(int Id){
+    effectiveCertificates[Id].sig_ca = my_cert_ca.sig_ca; //self signed ca certificate of the keyvault
+    effectiveCertificates[Id].pk_eff = newEffs[Id].pk_eff_new;
+    effectiveCertificates[Id].expiry = current_time + validity; 
+    effectiveCertificates[Id].t = current_time; 
+    rekeying = false;
+    return;
+}
+//Challenge the secondary keyvault
+void ChallengeKV(){
+    kvSyncChallenge.encrypted_msg = msg * other_cert_kv.pk_kv;
+    kvSyncChallenge.pk_kv = other_cert_kv.pk_kv;
+    kvSyncChallenge.t =current_time;
+    syncing = true; 
+    return;
+}
+
+//Decrypts the challenge from the other keyvault
+void DecryptSyncChallenge(){
+    decrypted_msg = (kvSyncChallenge.encrypted_msg / sk_kv);
+    clk = 0;
+    return;
+}
+//Answers the synchronization challenge of the primary keyvault and sends own challenge to the primary keyvault (MUTUAL AUTHENTICATION)
+void AnswerSyncChallenge(){
+    kvSyncReply.msg = decrypted_msg;
+    kvSyncReply.encrypted_msg = msg * my_cert_kv.pk_kv;
+    kvSyncReply.pk_kv = my_cert_kv.pk_kv;
+    kvSyncReply.t = current_time;
+    return;
+}
+//Decrypts the challenge from the other keyvault
+void DecryptSecondarySyncChallenge(){
+    decrypted_msg = (kvSyncReply.encrypted_msg / sk_kv);
+    return;
+}
+//Answers the synchronization challenge of the secondary keyvault
+void AnswerSecSyncChallenge(){
+    secKvSyncReply.msg = decrypted_msg;
+    secKvSyncReply.t = current_time;
+    return;
+}
+//Verifies decrypted message
+bool VerifySyncAnswer(int order){
+    if(order == first){
+        if(kvSyncReply.msg == msg){
+            return true;
+        }
+        return false;
+    }else{
+     if(secKvSyncReply.msg == msg){
+        return true;
+    }
+    return false;
+    }
+}
+//Primary keyvault sends controller status and its internal state to secondary
+void ProvideControllers(){
+    controllerTransfer = kv_controllers;
+    recent_Id_transfer = recent_Id;
+    answer_Id_transfer = answer_Id;
+    challenge_Id_transfer = challenge_Id;
+    eff_Id_transfer = eff_Id;
+    new_eff_Id_transfer = new_eff_Id;
+    ctr_Id_transfer = ctr_Id;
+    return;
+}
+//Stores controllers and internal state received from primary
+void StoreControllers(){
+    kv_controllers = controllerTransfer;
+    recent_Id = recent_Id_transfer;
+    answer_Id = answer_Id_transfer;
+    challenge_Id = challenge_Id_transfer;
+    eff_Id = eff_Id_transfer;
+    new_eff_Id = new_eff_Id_transfer;
+    ctr_Id = ctr_Id_transfer;
+    sync_happenned = true;
+    syncing = false;
+    return;
+}
+//Checks if controller can be removed
+bool IsActiveController(controller_Id Id){
+    return kv_controllers[Id];
+}
+//Gets the Id of the controller that shall be removed
+void GetRemovalId(){
+    ctr_Id = removal_Id;
+    clk = 0;
+    return;
+}
+
+bool SyncAllowed(){
+    return(!(removing || rekeying || joining || syncing));
+}</declaration>
+		<location id="id3" x="25" y="0">
+		</location>
+		<location id="id4" x="-340" y="0">
+			<committed/>
+		</location>
+		<location id="id5" x="450" y="-68">
+		</location>
+		<location id="id6" x="-416" y="68">
+		</location>
+		<location id="id7" x="484" y="68">
+		</location>
+		<location id="id8" x="493" y="-212">
+		</location>
+		<location id="id9" x="493" y="195">
+			<label kind="invariant" x="484" y="170">clk&lt;=1</label>
+		</location>
+		<location id="id10" x="8" y="314">
+		</location>
+		<location id="id11" x="-374" y="297">
+			<label kind="invariant" x="-384" y="314">clk&lt;=1</label>
+		</location>
+		<location id="id12" x="-416" y="187">
+		</location>
+		<location id="id13" x="-331" y="-221">
+			<label kind="invariant" x="-374" y="-204">clk &lt;=1</label>
+		</location>
+		<location id="id14" x="314" y="-297">
+		</location>
+		<location id="id15" x="-425" y="-110">
+			<committed/>
+		</location>
+		<location id="id16" x="-229" y="187">
+			<committed/>
+		</location>
+		<location id="id17" x="-221" y="-161">
+			<committed/>
+		</location>
+		<init ref="id3"/>
+		<transition>
+			<source ref="id17"/>
+			<target ref="id3"/>
+			<nail x="-77" y="-161"/>
+		</transition>
+		<transition>
+			<source ref="id16"/>
+			<target ref="id3"/>
+			<nail x="-85" y="187"/>
+		</transition>
+		<transition>
+			<source ref="id15"/>
+			<target ref="id3"/>
+			<label kind="synchronisation" x="-407" y="-93">RekeyInit!</label>
+			<nail x="-425" y="-76"/>
+			<nail x="-314" y="-76"/>
+			<nail x="-314" y="-102"/>
+			<nail x="-127" y="-102"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id15"/>
+			<label kind="guard" x="-399" y="-127">isPrimary</label>
+			<label kind="synchronisation" x="-399" y="-110">Rekey?</label>
+			<nail x="-119" y="-127"/>
+			<nail x="-153" y="-127"/>
+			<nail x="-178" y="-110"/>
+		</transition>
+		<transition>
+			<source ref="id14"/>
+			<target ref="id3"/>
+			<label kind="synchronisation" x="161" y="-280">AckOTRemove!</label>
+			<nail x="314" y="-263"/>
+			<nail x="68" y="-263"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id14"/>
+			<label kind="select" x="8" y="-331">Id:int[1,controllers_number - 1]</label>
+			<label kind="guard" x="42" y="-348">isPrimary</label>
+			<label kind="synchronisation" x="25" y="-314">AckRemove[Id]?</label>
+			<label kind="assignment" x="8" y="-297">RemoveController(Id)</label>
+			<nail x="0" y="-297"/>
+		</transition>
+		<transition>
+			<source ref="id13"/>
+			<target ref="id3"/>
+			<label kind="guard" x="-450" y="-306">!IsActiveController(ctr_Id) &amp;&amp; clk &gt;= 1</label>
+			<label kind="synchronisation" x="-425" y="-289">Notify!</label>
+			<label kind="assignment" x="-450" y="-272">removing = false</label>
+			<nail x="-450" y="-221"/>
+			<nail x="-450" y="-289"/>
+			<nail x="-34" y="-289"/>
+		</transition>
+		<transition>
+			<source ref="id13"/>
+			<target ref="id3"/>
+			<label kind="guard" x="-348" y="-280">IsActiveController(ctr_Id) &amp;&amp; clk &gt;= 1</label>
+			<label kind="synchronisation" x="-296" y="-263">RemoveControllerFwd[ctr_Id]!</label>
+			<nail x="-331" y="-246"/>
+			<nail x="-68" y="-246"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id13"/>
+			<label kind="guard" x="-280" y="-221">isPrimary</label>
+			<label kind="synchronisation" x="-289" y="-187">RemController?</label>
+			<label kind="assignment" x="-289" y="-204">GetRemovalId()</label>
+			<nail x="-68" y="-187"/>
+			<nail x="-289" y="-187"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id17"/>
+			<label kind="guard" x="-425" y="-195">!isPrimary</label>
+			<label kind="synchronisation" x="-433" y="-178">KvControllers?</label>
+			<label kind="assignment" x="-425" y="-161">StoreControllers()</label>
+			<nail x="-110" y="-136"/>
+			<nail x="-433" y="-136"/>
+			<nail x="-433" y="-161"/>
+			<nail x="-289" y="-161"/>
+			<nail x="-280" y="-161"/>
+			<nail x="-272" y="-161"/>
+		</transition>
+		<transition>
+			<source ref="id12"/>
+			<target ref="id16"/>
+			<label kind="synchronisation" x="-391" y="170">KvControllers!</label>
+			<label kind="assignment" x="-398" y="187">ProvideControllers()</label>
+			<nail x="-246" y="187"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id12"/>
+			<label kind="guard" x="-382" y="136">isPrimary</label>
+			<label kind="synchronisation" x="-391" y="153">KvSecACK?</label>
+			<nail x="-110" y="68"/>
+			<nail x="-187" y="153"/>
+			<nail x="-416" y="153"/>
+		</transition>
+		<transition>
+			<source ref="id11"/>
+			<target ref="id3"/>
+			<label kind="guard" x="-425" y="212">!VerifySyncAnswer(second) &amp;&amp; clk &gt;=1</label>
+			<label kind="synchronisation" x="-417" y="229">Notify!</label>
+			<nail x="-425" y="297"/>
+			<nail x="-425" y="229"/>
+			<nail x="-94" y="229"/>
+		</transition>
+		<transition>
+			<source ref="id11"/>
+			<target ref="id3"/>
+			<label kind="guard" x="-365" y="246">clk &gt;= 1 &amp;&amp; VerifySyncAnswer(second)</label>
+			<label kind="synchronisation" x="-348" y="263">KvSecACK!</label>
+			<nail x="-374" y="263"/>
+			<nail x="-212" y="263"/>
+			<nail x="-85" y="263"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id11"/>
+			<label kind="guard" x="-323" y="280">!isPrimary</label>
+			<label kind="synchronisation" x="-331" y="297">KvSecSyncReply?</label>
+			<label kind="assignment" x="-306" y="314">clk=0</label>
+			<nail x="34" y="110"/>
+			<nail x="-68" y="280"/>
+			<nail x="-178" y="280"/>
+			<nail x="-195" y="297"/>
+		</transition>
+		<transition>
+			<source ref="id10"/>
+			<target ref="id3"/>
+			<label kind="guard" x="-178" y="297">!VerifySyncAnswer(first)</label>
+			<label kind="synchronisation" x="-127" y="314">Notify!</label>
+			<nail x="-67" y="314"/>
+			<nail x="-84" y="314"/>
+			<nail x="-186" y="314"/>
+			<nail x="-186" y="289"/>
+			<nail x="-42" y="289"/>
+			<nail x="-42" y="255"/>
+			<nail x="-42" y="255"/>
+			<nail x="51" y="110"/>
+		</transition>
+		<transition>
+			<source ref="id10"/>
+			<target ref="id3"/>
+			<label kind="guard" x="9" y="212">VerifySyncAnswer(first)</label>
+			<label kind="synchronisation" x="34" y="229">KvSecSyncReply!</label>
+			<label kind="assignment" x="25" y="246">AnswerSecSyncChallenge()</label>
+			<nail x="9" y="229"/>
+			<nail x="170" y="229"/>
+			<nail x="161" y="203"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id10"/>
+			<label kind="guard" x="76" y="280">isPrimary</label>
+			<label kind="synchronisation" x="68" y="297">KvSyncReply?</label>
+			<label kind="assignment" x="34" y="314">DecryptSecondarySyncChallenge()</label>
+			<nail x="238" y="272"/>
+			<nail x="255" y="272"/>
+			<nail x="255" y="314"/>
+		</transition>
+		<transition>
+			<source ref="id9"/>
+			<target ref="id3"/>
+			<label kind="guard" x="382" y="246">clk&gt;=1</label>
+			<label kind="synchronisation" x="357" y="212">KvSyncReply!</label>
+			<label kind="assignment" x="323" y="229">AnswerSyncChallenge()</label>
+			<nail x="493" y="229"/>
+			<nail x="272" y="229"/>
+			<nail x="204" y="221"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id9"/>
+			<label kind="guard" x="374" y="161">!isPrimary</label>
+			<label kind="synchronisation" x="340" y="195">KvSyncChallenge?</label>
+			<label kind="assignment" x="306" y="178">DecryptSyncChallenge()</label>
+			<nail x="195" y="195"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id3"/>
+			<label kind="guard" x="170" y="118">isPrimary &amp;&amp; SyncAllowed() &amp;&amp; rekey_clk &lt;= refresh_setting</label>
+			<label kind="synchronisation" x="204" y="161">KvSyncChallenge!</label>
+			<label kind="assignment" x="204" y="135">ChallengeKV()</label>
+			<nail x="136" y="101"/>
+			<nail x="170" y="135"/>
+			<nail x="306" y="135"/>
+			<nail x="306" y="161"/>
+			<nail x="187" y="161"/>
+		</transition>
+		<transition>
+			<source ref="id8"/>
+			<target ref="id3"/>
+			<label kind="guard" x="323" y="-136">!VerifyEffSig(new_eff_Id)</label>
+			<label kind="synchronisation" x="425" y="-119">Notify!</label>
+			<nail x="493" y="-119"/>
+			<nail x="93" y="-119"/>
+		</transition>
+		<transition>
+			<source ref="id8"/>
+			<target ref="id3"/>
+			<label kind="guard" x="187" y="-187">VerifyEffSig(new_eff_Id)</label>
+			<label kind="synchronisation" x="178" y="-170">NewKVCert[new_eff_Id]!</label>
+			<label kind="assignment" x="204" y="-153">IssueNewCertificate(new_eff_Id)</label>
+			<nail x="340" y="-153"/>
+			<nail x="85" y="-153"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id8"/>
+			<label kind="select" x="238" y="-246">Id:int[1, controllers_number - 1]</label>
+			<label kind="guard" x="323" y="-263">isPrimary</label>
+			<label kind="synchronisation" x="272" y="-229">NewEffectiveKey[Id]?</label>
+			<label kind="assignment" x="289" y="-212">new_eff_Id = Id</label>
+			<nail x="93" y="-212"/>
+		</transition>
+		<transition>
+			<source ref="id7"/>
+			<target ref="id3"/>
+			<label kind="synchronisation" x="374" y="85">KVCert[eff_Id]!</label>
+			<label kind="assignment" x="357" y="102">IssueCertificate(eff_Id)</label>
+			<nail x="484" y="102"/>
+			<nail x="272" y="102"/>
+			<nail x="76" y="25"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id7"/>
+			<label kind="select" x="170" y="34">Id:int[1,controllers_number - 1]</label>
+			<label kind="guard" x="229" y="17">isPrimary</label>
+			<label kind="synchronisation" x="263" y="51">SPAck[Id]?</label>
+			<label kind="assignment" x="263" y="68">eff_Id = Id</label>
+			<nail x="119" y="34"/>
+			<nail x="221" y="68"/>
+		</transition>
+		<transition>
+			<source ref="id6"/>
+			<target ref="id3"/>
+			<label kind="synchronisation" x="-399" y="102">KVAnswer[challenge_Id]!</label>
+			<label kind="assignment" x="-408" y="119">AnswerChallenge(challenge_Id)</label>
+			<nail x="-416" y="119"/>
+			<nail x="-204" y="119"/>
+			<nail x="-119" y="42"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id6"/>
+			<label kind="select" x="-391" y="51">Id:int[1,controllers_number - 1]</label>
+			<label kind="guard" x="-408" y="34">isPrimary</label>
+			<label kind="synchronisation" x="-374" y="85">KVChallenge[Id]?</label>
+			<label kind="assignment" x="-391" y="68">DecryptChallenge(Id)</label>
+			<nail x="-136" y="34"/>
+			<nail x="-161" y="68"/>
+		</transition>
+		<transition>
+			<source ref="id5"/>
+			<target ref="id3"/>
+			<label kind="guard" x="298" y="-17">VerifySPAnswer(answer_Id)</label>
+			<label kind="synchronisation" x="323" y="0">KVAck[answer_Id]!</label>
+			<label kind="assignment" x="323" y="17">ProvideKVCert(answer_Id)</label>
+			<nail x="493" y="-68"/>
+			<nail x="485" y="-68"/>
+			<nail x="510" y="-68"/>
+			<nail x="493" y="0"/>
+			<nail x="281" y="0"/>
+		</transition>
+		<transition>
+			<source ref="id5"/>
+			<target ref="id3"/>
+			<label kind="guard" x="51" y="-42">!VerifySPAnswer(answer_Id)</label>
+			<label kind="synchronisation" x="93" y="-25">Notify!</label>
+			<nail x="442" y="-25"/>
+			<nail x="246" y="-25"/>
+			<nail x="51" y="-25"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id5"/>
+			<label kind="select" x="204" y="-119">Id:int[1, controllers_number - 1]</label>
+			<label kind="guard" x="331" y="-68">isPrimary</label>
+			<label kind="synchronisation" x="297" y="-102">SPAnswer[Id]?</label>
+			<label kind="assignment" x="297" y="-85">answer_Id = Id</label>
+			<nail x="59" y="-51"/>
+			<nail x="229" y="-51"/>
+			<nail x="272" y="-68"/>
+		</transition>
+		<transition>
+			<source ref="id4"/>
+			<target ref="id3"/>
+			<label kind="guard" x="-306" y="-93">VerifySig(recent_Id)</label>
+			<label kind="synchronisation" x="-306" y="-76">SPChallenge[recent_Id]!</label>
+			<label kind="assignment" x="-297" y="-51">ChallengeSP(recent_Id)</label>
+			<nail x="-340" y="-59"/>
+			<nail x="-76" y="-59"/>
+			<nail x="-17" y="-17"/>
+		</transition>
+		<transition>
+			<source ref="id4"/>
+			<target ref="id3"/>
+			<label kind="guard" x="-331" y="17">!VerifySig(recent_Id)</label>
+			<label kind="synchronisation" x="-323" y="34">Notify!</label>
+			<nail x="-340" y="34"/>
+			<nail x="-178" y="34"/>
+			<nail x="-25" y="8"/>
+		</transition>
+		<transition>
+			<source ref="id3"/>
+			<target ref="id4"/>
+			<label kind="select" x="-263" y="-34">Id:int[1,controllers_number - 1]</label>
+			<label kind="guard" x="-306" y="-17">isPrimary</label>
+			<label kind="synchronisation" x="-221" y="-17">JoinSP[Id]?</label>
+			<label kind="assignment" x="-221" y="0">recent_Id = Id</label>
+		</transition>
+	</template>
+	<template>
+		<name>Controller</name>
+		<parameter>const controller_Id myId, int mode, cert_ct my_cert_ct, cert_m my_cert_m, int sk_ct, cert_eff my_cert_eff</parameter>
+		<declaration>bool joined;
+//controller mode
+//int mode = sparePart;
+//Controller certificate
+//cert_ct my_cert_ct;
+//Manufacturer certificate
+//cert_m my_cert_m;
+//Effective certificate
+//cert_eff my_cert_eff;
+effective_pair my_eff_pair;
+//private key of the controller
+//int sk_ct;
+int sig_eff;
+//store for the old effective pair in case of rollback
+effective_pair old_eff_pair;
+//process clock
+clock clk;
+
+//message to be sent as a challenge
+const int msg = 1;
+
+//controller decrypted message
+int decrypted_msg;
+
+//Change mode to controller
+void JoinNetwork(){
+    joined = true;
+    mode = controller;
+    join_happenned = true;
+    return;
+}
+
+//Send join request -&gt; Spare part initiates the communication
+void JoinRequest(int Id){
+    joinRequests[Id].Id = Id;
+    joinRequests[Id].cert_c = my_cert_ct;
+    joining = true;
+    sync_happenned = false;
+    return;
+}
+//Decrypts the challenge
+void DecryptChallenge(int Id){
+    decrypted_msg = (spChallenges[Id].encrypted_msg / sk_ct);
+    return;
+}
+
+//Spare part answers the challenge from the keyvault
+void AnswerChallenge(int Id){
+    spAnswers[Id].msg = decrypted_msg;
+    spAnswers[Id].t = current_time;
+    return;
+}
+//Verify signature of the keyvault certificate
+bool VerifySig(int Id){
+    if( kvAcks[Id].cert_k.sig_m == my_cert_m.sig_m){
+        return true;
+    }
+    return false;
+}
+//Challenge sent to the keyvault
+void ChallengeKV(int Id){
+    kvChallenges[Id].encrypted_msg = msg * kvAcks[Id].cert_k.pk_kv;
+    kvChallenges[Id].pk_kv = kvAcks[Id].cert_k.pk_kv;
+    kvChallenges[Id].t = current_time;
+    return;
+}
+//Verification of correct challenge decryption
+bool VerifyKVAnswer(int Id){
+    if(kvAnswers[Id].msg == msg){
+        return true;
+    }
+    return false;
+}
+//Generates :) the effective pair for the controller
+void GenerateEffpair(int pair){
+    my_eff_pair = effective_pairs[pair];
+    clk =0;
+    return;
+}
+//Sends the ACK to keyvault with pk_eff from
+void ProvidePK_Eff(int Id){
+    spAcks[Id].pk_eff = my_eff_pair.pk_eff;
+    spAcks[Id].t = current_time;
+    return;
+}
+//Receives the eff certificate and becomes a controller on the network
+void GetEffCertAndJoin(int Id){
+    my_cert_eff = effectiveCertificates[Id];
+    JoinNetwork();
+    joining = false;
+    return;
+}
+
+//Generate signature
+void CreateSigEff(){
+    sig_eff = my_cert_eff.pk_eff * my_eff_pair.sk_eff;
+    return;
+}
+
+//Generates the new eff and signs it by the old sk_eff
+void GenerateNewEff(int pair){
+    CreateSigEff();
+    old_eff_pair = my_eff_pair;
+    my_eff_pair = effective_pairs[pair];
+    clk = 0;
+    return;
+}
+//Sends a request to the keyvault for new cert_eff
+void ProvideNewPK_Eff(int Id){
+    newEffs[Id].pk_eff_new = my_eff_pair.pk_eff;
+    newEffs[Id].sig_eff_old = sig_eff;
+    newEffs[Id].t = current_time;
+    return;
+}
+//Receives the new cert_eff from the keyvault
+void GetNewCertificate(int Id){
+    my_cert_eff = effectiveCertificates[Id];
+    rekeying = false;
+    return;
+}
+//Removes certificates and switches to being spare part
+void DeleteCertsAndMoveToSPMode(){
+    joined = false;
+    my_cert_eff.expiry = 0;
+    my_eff_pair.pk_eff = 0;
+    mode =  sparePart;
+    remove_happenned = true;
+    return;
+}
+
+bool JoinAllowed(){
+    return(!(syncing || removing || joining));
+}</declaration>
+		<location id="id18" x="0" y="0">
+		</location>
+		<location id="id19" x="416" y="8">
+		</location>
+		<location id="id20" x="-263" y="0">
+		</location>
+		<location id="id21" x="246" y="-85">
+		</location>
+		<location id="id22" x="425" y="-85">
+			<label kind="invariant" x="399" y="-119">clk&lt;=2</label>
+		</location>
+		<location id="id23" x="425" y="93">
+			<label kind="invariant" x="399" y="59">clk&lt;=2</label>
+		</location>
+		<location id="id24" x="-272" y="161">
+			<committed/>
+		</location>
+		<location id="id25" x="348" y="187">
+		</location>
+		<init ref="id18"/>
+		<transition>
+			<source ref="id23"/>
+			<target ref="id25"/>
+			<label kind="guard" x="365" y="161">clk&gt;=2</label>
+			<nail x="425" y="187"/>
+		</transition>
+		<transition>
+			<source ref="id24"/>
+			<target ref="id18"/>
+			<label kind="synchronisation" x="-254" y="178">AckRemove[myId]!</label>
+			<label kind="assignment" x="-254" y="195">DeleteCertsAndMoveToSPMode()</label>
+			<nail x="-272" y="195"/>
+			<nail x="42" y="195"/>
+		</transition>
+		<transition>
+			<source ref="id18"/>
+			<target ref="id24"/>
+			<label kind="guard" x="-238" y="144">mode==controller</label>
+			<label kind="synchronisation" x="-246" y="161">RemoveControllerFwd[myId]?</label>
+			<nail x="-25" y="161"/>
+		</transition>
+		<transition>
+			<source ref="id18"/>
+			<target ref="id18"/>
+			<label kind="synchronisation" x="-230" y="85">NewKVCert[myId]?</label>
+			<label kind="assignment" x="-238" y="102">GetNewCertificate(myId)</label>
+			<nail x="-60" y="128"/>
+			<nail x="-247" y="128"/>
+			<nail x="-247" y="102"/>
+			<nail x="-77" y="102"/>
+		</transition>
+		<transition>
+			<source ref="id25"/>
+			<target ref="id18"/>
+			<label kind="synchronisation" x="144" y="170">NewEffectiveKey[myId]!</label>
+			<label kind="assignment" x="136" y="187">ProvideNewPK_Eff(myId)</label>
+			<nail x="331" y="187"/>
+			<nail x="314" y="187"/>
+			<nail x="136" y="187"/>
+		</transition>
+		<transition>
+			<source ref="id18"/>
+			<target ref="id23"/>
+			<label kind="select" x="238" y="59">pair:int[0, 1]</label>
+			<label kind="guard" x="212" y="76">mode==controller</label>
+			<label kind="synchronisation" x="238" y="93">RekeyInit?</label>
+			<label kind="assignment" x="187" y="110">GenerateNewEff(pair)</label>
+			<nail x="85" y="76"/>
+			<nail x="391" y="76"/>
+		</transition>
+		<transition>
+			<source ref="id18"/>
+			<target ref="id18"/>
+			<label kind="synchronisation" x="-204" y="-85">KVCert[myId]?</label>
+			<label kind="assignment" x="-246" y="-68">GetEffCertAndJoin(myId)</label>
+			<nail x="-33" y="-25"/>
+			<nail x="-85" y="-51"/>
+			<nail x="-246" y="-51"/>
+			<nail x="-76" y="-25"/>
+		</transition>
+		<transition>
+			<source ref="id22"/>
+			<target ref="id18"/>
+			<label kind="guard" x="238" y="-68">clk&gt;=2</label>
+			<label kind="synchronisation" x="204" y="-51">SPAck[myId]!</label>
+			<label kind="assignment" x="204" y="-34">ProvidePK_Eff(myId)</label>
+			<nail x="425" y="-34"/>
+			<nail x="76" y="-34"/>
+		</transition>
+		<transition>
+			<source ref="id21"/>
+			<target ref="id22"/>
+			<label kind="select" x="280" y="-119">pair:int[0, 1]</label>
+			<label kind="guard" x="263" y="-102">VerifyKVAnswer(myId)</label>
+			<label kind="assignment" x="263" y="-85">GenerateEffpair(pair)</label>
+		</transition>
+		<transition>
+			<source ref="id21"/>
+			<target ref="id18"/>
+			<label kind="guard" x="76" y="-76">!VerifyKVAnswer(myId)</label>
+			<label kind="synchronisation" x="119" y="-59">Notify!</label>
+			<nail x="229" y="-59"/>
+			<nail x="85" y="-59"/>
+		</transition>
+		<transition>
+			<source ref="id18"/>
+			<target ref="id21"/>
+			<label kind="synchronisation" x="85" y="-102">KVAnswer[myId]?</label>
+			<nail x="68" y="-51"/>
+			<nail x="68" y="-85"/>
+		</transition>
+		<transition>
+			<source ref="id20"/>
+			<target ref="id18"/>
+			<label kind="guard" x="-170" y="0">!VerifySig(myId)</label>
+			<label kind="synchronisation" x="-145" y="17">Notify!</label>
+			<nail x="-204" y="17"/>
+			<nail x="-60" y="17"/>
+		</transition>
+		<transition>
+			<source ref="id20"/>
+			<target ref="id18"/>
+			<label kind="guard" x="-212" y="34">VerifySig(myId)</label>
+			<label kind="synchronisation" x="-221" y="51">KVChallenge[myId]!</label>
+			<label kind="assignment" x="-221" y="68">ChallengeKV(myId)</label>
+			<nail x="-221" y="51"/>
+			<nail x="-85" y="51"/>
+		</transition>
+		<transition>
+			<source ref="id18"/>
+			<target ref="id20"/>
+			<label kind="synchronisation" x="-153" y="-17">KVAck[myId]?</label>
+		</transition>
+		<transition>
+			<source ref="id19"/>
+			<target ref="id18"/>
+			<label kind="synchronisation" x="272" y="17">SPAnswer[myId]!</label>
+			<label kind="assignment" x="255" y="34">AnswerChallenge(myId)</label>
+			<nail x="382" y="34"/>
+			<nail x="68" y="34"/>
+		</transition>
+		<transition>
+			<source ref="id18"/>
+			<target ref="id19"/>
+			<label kind="synchronisation" x="153" y="-8">SPChallenge[myId]?</label>
+			<label kind="assignment" x="102" y="8">DecryptChallenge(myId)</label>
+			<nail x="25" y="8"/>
+		</transition>
+		<transition>
+			<source ref="id18"/>
+			<target ref="id18"/>
+			<label kind="guard" x="-85" y="-136">mode == sparePart 
+&amp;&amp; rekey_clk &lt;= refresh_setting
+&amp;&amp; JoinAllowed()</label>
+			<label kind="synchronisation" x="-59" y="-76">JoinSP[myId]!</label>
+			<label kind="assignment" x="-68" y="-59">JoinRequest(myId)</label>
+			<nail x="-8" y="-25"/>
+			<nail x="-59" y="-42"/>
+			<nail x="51" y="-42"/>
+			<nail x="8" y="-25"/>
+		</transition>
+	</template>
+	<system>// Place template instantiations here.
+//manufacturer certificate
+const cert_m m = {1,1};
+//keyvault certificate definitions
+const cert_kv k = {1,1};
+const cert_ca ca = {1,1};
+const int sk_kv = 1;
+//controller certificate definitions
+const cert_ct  c_ct = {1,1};
+const int sk_ct = 1;
+
+//keyvault active controllers definition
+const controllers kv_controllers_init = {false, false, true};
+const controllers kv_sec_controllers_init = {false, false, false};
+//controller definitions
+controller1 = Controller(1, sparePart, c_ct, m, sk_ct, notinitialized_cert);
+controller2 = Controller(2, controller, c_ct, m, sk_ct, initialized_cert);
+//keyvault definitions
+keyvault1 = Keyvault(m, k, k, ca, 1, true, kv_controllers_init);
+keyvault2 = Keyvault(m, k, k, ca, 1, false, kv_sec_controllers_init);
+
+//time discretizer definitions
+timediscretizer = TimeDiscretizer();
+
+//rekey timer definitions
+rekeytimer = RekeyTimer();
+
+//OT definitions
+ot = OT();
+// List one or more processes to be composed into a system.
+system controller1, controller2, keyvault1, keyvault2, timediscretizer, rekeytimer, ot;</system>
+	<queries>
+		<query>
+			<formula>A[](sync_happenned) imply (keyvault1.kv_controllers == keyvault2.kv_controllers)</formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>A[]!deadlock</formula>
+			<comment></comment>
+		</query>
+		<query>
+			<formula>E&lt;&gt;(sync_happenned) &amp;&amp; !(keyvault1.kv_controllers == keyvault2.kv_controllers) </formula>
+			<comment></comment>
+		</query>
+	</queries>
+</nta>
